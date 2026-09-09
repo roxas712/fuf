@@ -88,14 +88,34 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(locationStatusText)
                     .displayFont(20)
-                    .foregroundStyle(location.readiness == .reducedAccuracy
-                                      ? Theme.heart : Theme.ink)
-                if location.readiness == .reducedAccuracy {
+                    .foregroundStyle(locationStatusColor)
+                switch location.readiness {
+                case .reducedAccuracy:
                     Text("Precise Location is off, so camera positions can't be "
                          + "trusted. Turn it on in Settings \u{2192} Privacy & "
                          + "Security \u{2192} Location Services \u{2192} Squawker "
                          + "before starting a session.")
                         .font(.footnote).foregroundStyle(Theme.heart)
+
+                case .foregroundOnly:
+                    // Not blocking: this genuinely works with the screen on. But
+                    // it stops recording the moment the phone locks, and that
+                    // failure is silent, so it has to be visible here.
+                    Text("Sightings will only be recorded while the app is open. "
+                         + "iOS asks for background access after the app has used "
+                         + "location for a while \u{2014} or you can grant it now.")
+                        .font(.footnote).foregroundStyle(Theme.gold)
+                    Button("Allow always") { location.requestAlwaysUpgrade() }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.accent)
+
+                case .denied:
+                    Text("Sightings cannot be placed on a map without location. "
+                         + "Enable it in Settings \u{2192} Privacy & Security.")
+                        .font(.footnote).foregroundStyle(Theme.heart)
+
+                case .notDetermined, .ready:
+                    EmptyView()
                 }
             }
         }
@@ -103,10 +123,20 @@ struct DashboardView: View {
 
     private var locationStatusText: String {
         switch location.readiness {
-        case .notDetermined: "Waiting for permission"
-        case .denied: "Location access denied"
+        case .notDetermined:   "Waiting for permission"
+        case .denied:          "Location access denied"
         case .reducedAccuracy: "Precise Location required"
-        case .ready: "Ready"
+        case .foregroundOnly:  "Foreground only"
+        case .ready:           "Ready"
+        }
+    }
+
+    private var locationStatusColor: Color {
+        switch location.readiness {
+        case .reducedAccuracy, .denied: Theme.heart
+        case .foregroundOnly:           Theme.gold
+        case .notDetermined:            Theme.muted
+        case .ready:                    Theme.ink
         }
     }
 
