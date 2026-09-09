@@ -1,0 +1,21 @@
+# Firmware build output (arduino-cli)
+.build/
+*.elf
+*.map
+
+# Swift package build output
+ios/FlockCore/.build/
+.swiftpm/
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Local configuration — never commit a real backend URL or credentials
+*.local
+.env
