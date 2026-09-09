@@ -114,13 +114,25 @@ extension LocationProvider: CLLocationManagerDelegate {
                                      didUpdateLocations locations: [CLLocation]) {
         guard let l = locations.last else { return }
         Task { @MainActor in
-            latest = LocationFix(
+            // The sentinel filtering lives in FlockCore. Nothing can deliver a
+            // delegate callback from a test, and both of CoreLocation's
+            // "unavailable" markers -- a -1 speed and a negative
+            // horizontalAccuracy -- are real uploaded values if they are missed.
+            //
+            // Assigned unconditionally, so an invalid fix clears `latest`
+            // rather than leaving the last good one standing. `LocationFix`
+            // carries no timestamp, so a retained fix is indistinguishable from
+            // a current one to everything downstream: `SessionController`
+            // stamps whatever is here onto the next sighting, which would put a
+            // detection at a place the phone has since driven away from. Losing
+            // the position is recoverable -- the sighting is still stored, and
+            // the server interpolates it from the surrounding track -- and a
+            // confidently wrong coordinate is not.
+            latest = LocationFix.fromCoreLocation(
                 lat: l.coordinate.latitude,
                 lon: l.coordinate.longitude,
                 horizontalAccuracy: l.horizontalAccuracy,
-                // CoreLocation reports -1 when speed is unavailable; that is
-                // not a speed and must not be uploaded as one.
-                speed: l.speed >= 0 ? l.speed : nil)
+                speed: l.speed)
         }
     }
 

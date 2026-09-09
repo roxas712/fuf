@@ -175,11 +175,11 @@ final class SessionController: ObservableObject {
     /// last time it is known to have done anything -- never "now", which
     /// could be hours after an overnight interruption actually ended it.
     ///
-    /// This does not touch a `sessions` row: `SightingStore` exposes no way
-    /// to write `started_at`/`ended_at` for one, and FlockCore is not this
-    /// task's to change. "Closing" here means: stop treating the id as an
-    /// open session, and say so, rather than silently carrying it forward
-    /// into whatever the user starts next.
+    /// Closing means both halves: the `sessions` row gets its `ended_at`
+    /// through `store.closeSession`, so the uploader can send the session's
+    /// real end time rather than leaving it open forever, and `SessionMemory`
+    /// stops naming the id, so it is not silently carried forward into
+    /// whatever the user starts next.
     private func closeOrphanedSessionIfAny() {
         guard let store else { return }
         do {

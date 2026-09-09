@@ -71,15 +71,51 @@ public struct LocationFix: Equatable, Sendable {
     public var lat: Double
     public var lon: Double
     /// Metres. Lets the server weight a fix taken in a tunnel differently from
-    /// one under open sky.
-    public var horizontalAccuracy: Double
+    /// one under open sky. `nil` only when a fix arrived by some route that
+    /// carried no accuracy with it; CoreLocation's own "no accuracy" marker
+    /// means the coordinates are invalid, so it produces no fix at all rather
+    /// than one with this field cleared.
+    public var horizontalAccuracy: Double?
     /// Metres/second. Constrains how far the phone travelled between samples.
     public var speed: Double?
 
-    public init(lat: Double, lon: Double, horizontalAccuracy: Double, speed: Double?) {
+    public init(lat: Double, lon: Double, horizontalAccuracy: Double?, speed: Double?) {
         self.lat = lat
         self.lon = lon
         self.horizontalAccuracy = horizontalAccuracy
         self.speed = speed
+    }
+
+    /// Builds a fix from the raw values CoreLocation hands out, dropping the
+    /// sentinels it uses for "unavailable". Returns `nil` when there is no
+    /// position to report.
+    ///
+    /// Lives here, taking plain doubles, rather than in `LocationProvider`:
+    /// this is the whole of the app's CLLocation mapping that has any judgement
+    /// in it, and inside a `CLLocationManager` delegate callback no test can
+    /// reach it. CoreLocation itself stays out of this package, so it still
+    /// builds and tests on a Mac with no simulator.
+    public static func fromCoreLocation(lat: Double, lon: Double,
+                                        horizontalAccuracy: Double,
+                                        speed: Double) -> LocationFix? {
+        // A negative horizontalAccuracy is not "the accuracy is unknown". It is
+        // CoreLocation saying the latitude and longitude are invalid -- there is
+        // no position here, only whatever numbers the struct happens to carry.
+        // So the whole fix is discarded, not just the accuracy: keeping the
+        // coordinates would put a fabricated point on the map and feed it to a
+        // position estimator, and weighting a fabricated coordinate lower is not
+        // the same as not having one. A sighting recorded with no position at
+        // all is honest, and the server interpolates it from the surrounding
+        // track; a sighting recorded somewhere the phone never was is not
+        // recoverable by anything downstream.
+        guard horizontalAccuracy >= 0 else { return nil }
+        return LocationFix(
+            lat: lat, lon: lon,
+            horizontalAccuracy: horizontalAccuracy,
+            // CoreLocation reports -1 when speed is unavailable; that is not a
+            // speed and must not be uploaded as one. Unlike the accuracy
+            // sentinel it says nothing about the coordinates, so it nils only
+            // itself and the fix still stands.
+            speed: speed >= 0 ? speed : nil)
     }
 }
