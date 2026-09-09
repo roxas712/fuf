@@ -132,25 +132,33 @@ extension View {
 /// filled accent capsule below that.
 struct PrimaryActionStyle: ButtonStyle {
     var enabled: Bool
+
     func makeBody(configuration: Configuration) -> some View {
-        let label = configuration.label
+        configuration.label
             .fontWeight(.semibold)
+            .foregroundStyle(enabled ? Theme.void : Theme.faint)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 15)
-        if #available(iOS 26.0, *) {
-            label
-                .foregroundStyle(enabled ? Theme.void : Theme.faint)
-                .glassEffect(enabled ? .regular.tint(Theme.accent).interactive()
-                                     : .regular,
-                             in: .rect(cornerRadius: Theme.R.md))
-                .opacity(configuration.isPressed ? 0.85 : 1)
-        } else {
-            label
-                .foregroundStyle(enabled ? Theme.void : Theme.faint)
-                .background(enabled ? Theme.accent : Theme.bg3,
-                            in: .rect(cornerRadius: Theme.R.md, style: .continuous))
-                .shadow(color: enabled ? Theme.glow.opacity(0.5) : .clear, radius: 16, y: 6)
-                .opacity(configuration.isPressed ? 0.85 : 1)
-        }
+            .background {
+                // Glass goes BEHIND the label, not around it. Applied as a
+                // wrapper it sits between the finger and the button, and an
+                // .interactive() glass runs its own touch handling -- which can
+                // eat the tap before the Button ever sees it.
+                if #available(iOS 26.0, *) {
+                    Color.clear.glassEffect(
+                        enabled ? .regular.tint(Theme.accent) : .regular,
+                        in: .rect(cornerRadius: Theme.R.md))
+                } else {
+                    RoundedRectangle(cornerRadius: Theme.R.md, style: .continuous)
+                        .fill(enabled ? Theme.accent : Theme.bg3)
+                        .shadow(color: enabled ? Theme.glow.opacity(0.5) : .clear,
+                                radius: 16, y: 6)
+                }
+            }
+            // Explicit hit area. Without it the tappable region is whatever the
+            // background happens to draw, which is exactly the ambiguity that
+            // made this fail silently.
+            .contentShape(.rect(cornerRadius: Theme.R.md))
+            .opacity(configuration.isPressed ? 0.85 : 1)
     }
 }
