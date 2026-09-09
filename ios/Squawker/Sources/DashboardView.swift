@@ -11,12 +11,19 @@ struct DashboardView: View {
     var onSignedOut: () -> Void
 
     @StateObject private var location = LocationProvider()
+    @StateObject private var peripheral = PeripheralClient()
 
     @State private var pending = 0
     @State private var camerasTotal = 0
     @State private var camerasSession: Int?      // nil until a session has run
     @State private var labelled = 0
     @State private var storeError: String?
+
+    // Received this launch, in memory only. Not the queue's counts -- those
+    // come from SightingStore once Task 15 wires storage -- just proof the
+    // radio is live.
+    @State private var sightingsSeen = 0
+    @State private var labelsSeen = 0
 
     var body: some View {
         ZStack {
@@ -38,6 +45,9 @@ struct DashboardView: View {
         .preferredColorScheme(.dark)
         .task {
             refresh()
+            peripheral.onSighting = { _ in sightingsSeen += 1 }
+            peripheral.onDeviceLabel = { _ in labelsSeen += 1 }
+            peripheral.start()
             await location.requestAuthorization()
         }
     }
@@ -60,11 +70,20 @@ struct DashboardView: View {
     private var detectorCard: some View {
         card(title: "Detector", systemImage: "dot.radiowaves.left.and.right") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Not connected")
-                    .displayFont(24).foregroundStyle(Theme.ink)
-                Text("Bluetooth pairing, location and session control arrive with "
-                     + "the next tasks. The screen is here so the shape of the app "
-                     + "is real before the radios are.")
+                HStack(spacing: 8) {
+                    Circle().fill(detectorStatusColor).frame(width: 8, height: 8)
+                    Text(detectorStatusText)
+                        .displayFont(22).foregroundStyle(Theme.ink)
+                }
+                HStack(spacing: 0) {
+                    stat("\(sightingsSeen)", "sightings")
+                    divider
+                    stat("\(labelsSeen)", "device labels")
+                }
+                Text("Session control arrives with Task 15. This is the live "
+                     + "Bluetooth link on its own: a subscribed link with zero "
+                     + "counts above means paired-but-idle, not broken -- give it "
+                     + "a moment for the first notification.")
                     .font(.footnote).foregroundStyle(Theme.muted)
                 Button {
                 } label: {
@@ -75,6 +94,29 @@ struct DashboardView: View {
                 .foregroundStyle(Theme.faint)
                 .disabled(true)
             }
+        }
+    }
+
+    private var detectorStatusText: String {
+        switch peripheral.state {
+        case .idle:          "Not connected"
+        case .poweredOff:    "Bluetooth is off"
+        case .unauthorized:  "Bluetooth access denied"
+        case .scanning:      "Scanning\u{2026}"
+        case .connecting:    "Connecting\u{2026}"
+        case .connected:     "Connected, subscribing\u{2026}"
+        case .subscribed:    "Subscribed"
+        case .needsRepair:   "Needs re-pairing"
+        }
+    }
+
+    private var detectorStatusColor: Color {
+        switch peripheral.state {
+        case .subscribed:                     Theme.green
+        case .needsRepair, .unauthorized:     Theme.heart
+        case .poweredOff:                     Theme.gold
+        case .idle, .scanning, .connecting,
+             .connected:                      Theme.faint
         }
     }
 
