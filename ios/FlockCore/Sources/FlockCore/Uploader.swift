@@ -6,7 +6,11 @@ public enum UploadOutcome: Equatable, Sendable {
     case uploaded(Int)
     case authExpired
     case quarantined(seqs: [Int], reason: String)
-    case retryLater(afterSeconds: Double)
+    /// Carries the status so the UI can say *why* it is waiting. Without it a
+    /// server that fails every batch forever is indistinguishable from a
+    /// quiet, healthy queue -- which is exactly how a 500 on every upload
+    /// went unnoticed behind a growing pending count.
+    case retryLater(afterSeconds: Double, status: Int)
 }
 
 /// Batches pending sightings and posts them.
@@ -83,7 +87,7 @@ public actor Uploader {
 
         default:
             consecutiveFailures += 1
-            return .retryLater(afterSeconds: backoffDelay())
+            return .retryLater(afterSeconds: backoffDelay(), status: reply.status)
         }
     }
 

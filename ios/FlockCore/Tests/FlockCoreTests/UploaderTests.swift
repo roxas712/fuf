@@ -150,11 +150,30 @@ struct UploaderTests {
         let up = Uploader(store: store, http: http,
                           endpoint: URL(string: "https://x/y")!, token: { "t" })
 
-        guard case .retryLater(let delay) = try await up.uploadOnce() else {
+        guard case .retryLater(let delay, _) = try await up.uploadOnce() else {
             Issue.record("expected retryLater"); return
         }
         #expect(delay > 0)
         #expect(try store.pendingCount() == 1)
+    }
+
+    @Test("the failing status reaches the caller, not just a delay")
+    func serverErrorReportsStatus() async throws {
+        // A 500 on every batch is permanent from the phone's point of view, but
+        // it arrives through the same path as a transient 503. Only the status
+        // tells them apart, so the UI can say "the server is rejecting these"
+        // instead of leaving a pending count to climb in silence.
+        let store = try makeStore()
+        try store.insert(sighting(seq: 1))
+        let http = FakeHTTP()
+        http.responses = [.success(HTTPReply(status: 500, body: Data()))]
+        let up = Uploader(store: store, http: http,
+                          endpoint: URL(string: "https://x/y")!, token: { "t" })
+
+        guard case .retryLater(_, let status) = try await up.uploadOnce() else {
+            Issue.record("expected retryLater"); return
+        }
+        #expect(status == 500)
     }
 
     @Test("backoff grows and is capped at five minutes")
@@ -169,7 +188,7 @@ struct UploaderTests {
 
         var last: Double = 0
         for _ in 1...15 {
-            guard case .retryLater(let d) = try await up.uploadOnce() else {
+            guard case .retryLater(let d, _) = try await up.uploadOnce() else {
                 Issue.record("expected retryLater"); return
             }
             #expect(d >= last)
@@ -233,7 +252,7 @@ struct UploaderTests {
         _ = try await up.uploadOnce()                    // fail, backoff grows
         _ = try await up.uploadOnce()                    // succeed, reset
         try store.insert(sighting(seq: 3))
-        guard case .retryLater(let d) = try await up.uploadOnce() else {
+        guard case .retryLater(let d, _) = try await up.uploadOnce() else {
             Issue.record("expected retryLater"); return
         }
         #expect(d == 2)                                  // back to the first step

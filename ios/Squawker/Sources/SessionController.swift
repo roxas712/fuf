@@ -40,6 +40,8 @@ final class SessionController: ObservableObject {
     private var uploader: Uploader?
     /// One-shot latch: see the comment on `refreshUploaderDeviceIDIfNeeded()`.
     private var uploaderDeviceIDKnown = false
+    /// Consecutive failed upload attempts, used to tell a blip from an outage.
+    private var consecutiveUploadFailures = 0
 
     private var sessionID = ""
     private var seq = 0
@@ -87,6 +89,7 @@ final class SessionController: ObservableObject {
         bootEpoch = BootEpoch()
         lastError = nil
         uploaderDeviceIDKnown = false
+        consecutiveUploadFailures = 0
 
         let startedAt = Date().timeIntervalSince1970
         SessionMemory.currentSessionID = sessionID
@@ -241,7 +244,11 @@ final class SessionController: ObservableObject {
                          bootEpoch: epoch, fix: location.latest)
         do {
             try store.insert(s)
-            sightingCount += 1
+            // Not counted again here: `sightingCount` is incremented once at the
+            // top of this method, for every notification the radio delivers.
+            // Counting stored ones a second time made the dashboard read roughly
+            // double, which also made a climbing number look like proof the
+            // session was recording when it was only proof the link was up.
             SessionMemory.currentSessionLastActivity = observedAt
             // Counted in memory, not re-queried. pendingCount() is
             // SELECT COUNT(*) over the pending index; at ~2 notifications
@@ -288,20 +295,39 @@ final class SessionController: ObservableObject {
                     switch try await self.uploader?.uploadOnce() {
                     case .uploaded:
                         wait = 1                       // drain fast while there is more
+                        self.consecutiveUploadFailures = 0
+                        self.lastError = nil
                     case .nothingToDo, .none:
                         wait = 15
+                        self.consecutiveUploadFailures = 0
                     case .authExpired:
                         self.lastError = "Your login expired. Sign in again to resume uploads."
                         wait = 60
                     case .quarantined(let seqs, let reason):
                         self.lastError = "\(seqs.count) sighting(s) were rejected: \(reason)"
                         wait = 1
-                    case .retryLater(let after):
+                    case .retryLater(let after, let status):
                         wait = after
+                        // One failure is weather. Three in a row is the server,
+                        // and staying quiet about it is how a 500 on every batch
+                        // hid behind a pending count that just kept climbing.
+                        self.consecutiveUploadFailures += 1
+                        if self.consecutiveUploadFailures >= 3 {
+                            self.lastError = "The server is not accepting uploads "
+                                + "(HTTP \(status)). Sightings are safe on the phone "
+                                + "and will go out once it recovers."
+                        }
                     }
                     self.pendingCount = (try? self.store?.pendingCount()) ?? self.pendingCount
                 } catch {
+                    // Reported for the same reason: a URLSession failure every
+                    // time is not something to retry in silence forever.
                     wait = 30
+                    self.consecutiveUploadFailures += 1
+                    if self.consecutiveUploadFailures >= 3 {
+                        self.lastError = "Uploads are failing: "
+                            + error.localizedDescription
+                    }
                 }
                 try? await Task.sleep(for: .seconds(wait))
             }
