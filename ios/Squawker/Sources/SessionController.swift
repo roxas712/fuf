@@ -82,6 +82,7 @@ final class SessionController: ObservableObject {
         // rather than a refusal.
 
         sessionID = UUID().uuidString
+        try? store.openSession(id: sessionID, startedAt: Date().timeIntervalSince1970)
         seq = 0
         bootEpoch = BootEpoch()
         lastError = nil
@@ -102,13 +103,33 @@ final class SessionController: ObservableObject {
         // keeps the app alive, which is what makes BLE delivery reliable
         // when the phone is locked.
         location.start()
-        peripheral.start()
+        // peripheral.start() is NOT called here -- see connectDetector().
         status = .running
         startUploadLoop()
     }
 
+    /// Connects to the detector, independent of any session.
+    ///
+    /// The link is not part of recording. Adjusting the device's volume or
+    /// brightness from the phone -- the reason the settings characteristic
+    /// exists -- should not require starting a session, because a session also
+    /// turns on continuous GPS at roughly 10-15% battery per hour. Sightings
+    /// that arrive while no session is running are counted for display and
+    /// deliberately not stored: they have no session to belong to.
+    func connectDetector() {
+        peripheral.start()
+    }
+
     func stop() {
-        peripheral.stop()
+        // Close the row before tearing down, so a clean stop is distinguishable
+        // from a crash on next launch.
+        if status == .running, let store {
+            let endedAt = (try? store.lastObservedAt(inSession: sessionID))
+                ?? Date().timeIntervalSince1970
+            try? store.closeSession(id: sessionID, endedAt: endedAt)
+        }
+        // The detector link outlives the session, deliberately: settings are
+        // adjustable without recording. See connectDetector().
         location.stop()
         uploadTask?.cancel()
         uploadTask = nil
@@ -157,13 +178,25 @@ final class SessionController: ObservableObject {
     /// open session, and say so, rather than silently carrying it forward
     /// into whatever the user starts next.
     private func closeOrphanedSessionIfAny() {
-        guard let endedAt = SessionMemory.currentSessionLastActivity else { return }
-        SessionMemory.currentSessionLastActivity = nil
-        let when = DateFormatter.localizedString(
-            from: Date(timeIntervalSince1970: endedAt), dateStyle: .short, timeStyle: .short)
-        lastError = "The previous session ended unexpectedly around \(when), when the "
-                  + "app was closed while it was still running. Anything it queued is "
-                  + "still waiting to upload."
+        guard let store else { return }
+        do {
+            guard let orphan = try store.openSessionID() else { return }
+            // ended_at from the last sighting it actually recorded, not from
+            // now: a session interrupted overnight would otherwise appear to
+            // have run for hours.
+            let endedAt = try store.lastObservedAt(inSession: orphan)
+                ?? Date().timeIntervalSince1970
+            try store.closeSession(id: orphan, endedAt: endedAt)
+            SessionMemory.currentSessionID = nil
+            SessionMemory.currentSessionLastActivity = nil
+            let when = DateFormatter.localizedString(
+                from: Date(timeIntervalSince1970: endedAt),
+                dateStyle: .short, timeStyle: .short)
+            lastError = "The previous session ended unexpectedly around \(when), when the "
+                + "app stopped. Its sightings are still queued and will upload."
+        } catch {
+            lastError = "Could not close the previous session: \(error)"
+        }
     }
 
     private func makeUploader(store: SightingStore, deviceID: String?) -> Uploader {
@@ -193,7 +226,12 @@ final class SessionController: ObservableObject {
     }
 
     private func handle(_ record: SightingRecord) {
-        guard let store else { return }
+        // Counted whenever the detector is linked, so the dashboard shows the
+        // radio working before a session starts.
+        sightingCount += 1
+        // Stored only while recording: a sighting outside a session has no
+        // session_id, and the server's schema requires one.
+        guard status == .running, let store else { return }
         refreshUploaderDeviceIDIfNeeded()
         seq += 1
         let observedAt = Date().timeIntervalSince1970

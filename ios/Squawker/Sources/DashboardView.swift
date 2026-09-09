@@ -42,6 +42,9 @@ struct DashboardView: View {
         .preferredColorScheme(.dark)
         .task {
             refresh()
+            // The detector link comes up with the screen, not with a session:
+            // device settings must be reachable without recording.
+            session.connectDetector()
             await session.location.requestAuthorization()
         }
         .onChange(of: session.status) { _, newStatus in

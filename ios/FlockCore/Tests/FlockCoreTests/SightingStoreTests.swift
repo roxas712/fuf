@@ -200,3 +200,58 @@ extension SightingStoreTests {
         #expect(try s.deviceCount() == 0)      // no DeviceInfo ever arrived
     }
 }
+
+// The sessions table. A session outlives the app -- it can be killed mid-drive
+// -- so the one left open has to be findable and closable on next launch.
+extension SightingStoreTests {
+
+    @Test("an opened session is the open one")
+    func openSession() throws {
+        let s = try makeStore()
+        try s.openSession(id: "s1", startedAt: 1_000)
+        #expect(try s.openSessionID() == "s1")
+    }
+
+    @Test("closing it clears the open session")
+    func closeSession() throws {
+        let s = try makeStore()
+        try s.openSession(id: "s1", startedAt: 1_000)
+        try s.closeSession(id: "s1", endedAt: 2_000)
+        #expect(try s.openSessionID() == nil)
+    }
+
+    @Test("a fresh database has no open session")
+    func noOpenSession() throws {
+        #expect(try makeStore().openSessionID() == nil)
+    }
+
+    @Test("an open session survives reopening the database")
+    func openSessionSurvivesRestart() throws {
+        // The whole point: the app was killed mid-drive and must find it again.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flock-\(UUID().uuidString).sqlite")
+        do { try SightingStore(path: url.path).openSession(id: "s1", startedAt: 1_000) }
+        #expect(try SightingStore(path: url.path).openSessionID() == "s1")
+    }
+
+    @Test("the last sighting's time is recoverable, for closing an orphan")
+    func lastObservedAt() throws {
+        // ended_at must come from the last sighting, not the relaunch: a session
+        // interrupted overnight would otherwise look like it ran for hours.
+        let s = try makeStore()
+        try s.openSession(id: "s1", startedAt: 1_000)
+        try s.insert(sighting(seq: 1, session: "s1"))
+        try s.insert(sighting(seq: 2, session: "s1"))
+        #expect(try s.lastObservedAt(inSession: "s1") == 1_757_000_000.5)
+        #expect(try s.lastObservedAt(inSession: "nope") == nil)
+    }
+
+    @Test("only the most recent open session is returned")
+    func mostRecentOpen() throws {
+        let s = try makeStore()
+        try s.openSession(id: "old", startedAt: 1_000)
+        try s.closeSession(id: "old", endedAt: 1_500)
+        try s.openSession(id: "new", startedAt: 2_000)
+        #expect(try s.openSessionID() == "new")
+    }
+}

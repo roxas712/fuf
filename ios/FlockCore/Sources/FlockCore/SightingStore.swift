@@ -271,6 +271,74 @@ public final class SightingStore: @unchecked Sendable {
 
     /// How many cameras the device told us a name for. Always <= camerasSeen(),
     /// because a hidden SSID never produces a DeviceInfo.
+    // MARK: - Sessions
+    //
+    // A session outlives the app: it can be killed mid-drive and relaunched,
+    // and the sightings already queued still belong to the session that was
+    // running. Persisting it means the orphan can be found and closed with a
+    // truthful end time rather than the relaunch time.
+
+    public func openSession(id: String, startedAt: Double) throws {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO sessions (id, started_at, ended_at) VALUES (?1, ?2, NULL);",
+            -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_text(st, 1, id, -1, Self.transient)
+        sqlite3_bind_double(st, 2, startedAt)
+        guard sqlite3_step(st) == SQLITE_DONE else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    public func closeSession(id: String, endedAt: Double) throws {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "UPDATE sessions SET ended_at = ?1 WHERE id = ?2;", -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_double(st, 1, endedAt)
+        sqlite3_bind_text(st, 2, id, -1, Self.transient)
+        guard sqlite3_step(st) == SQLITE_DONE else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    /// The session left running, if any. Most recent first, because only one
+    /// should ever be open and the newest is the one that matters.
+    public func openSessionID() throws -> String? {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT id FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1;",
+            -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        guard sqlite3_step(st) == SQLITE_ROW,
+              sqlite3_column_type(st, 0) != SQLITE_NULL else { return nil }
+        return String(cString: sqlite3_column_text(st, 0))
+    }
+
+    /// When the session last actually recorded something. This is the honest
+    /// `ended_at` for an orphan -- the relaunch time would make a session
+    /// interrupted overnight look like it ran for hours.
+    public func lastObservedAt(inSession sessionID: String) throws -> Double? {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT MAX(observed_at) FROM sightings WHERE session_id = ?1;",
+            -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_text(st, 1, sessionID, -1, Self.transient)
+        guard sqlite3_step(st) == SQLITE_ROW,
+              sqlite3_column_type(st, 0) != SQLITE_NULL else { return nil }
+        return sqlite3_column_double(st, 0)
+    }
+
     public func deviceCount() throws -> Int {
         try scalar("SELECT COUNT(*) FROM devices;")
     }
