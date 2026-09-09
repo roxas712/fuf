@@ -1,4 +1,4 @@
-# fuf
+# Squawker
 
 Surveillance-camera detection on an M5Stack FIRE, plus the iPhone app that
 gives its sightings a time and a place.
