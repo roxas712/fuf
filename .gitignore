@@ -13,7 +13,7 @@ ios/FlockCore/.build/
 *.xcodeproj/
 Signing.local.xcconfig
 # Also generated from project.yml -- do not edit or commit, it will be clobbered.
-ios/FlockSquawk/Info.plist
+ios/Squawker/Info.plist
 *.xcuserstate
 xcuserdata/
 DerivedData/

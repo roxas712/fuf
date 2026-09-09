@@ -1,10 +1,10 @@
 import SwiftUI
 
 @main
-struct FlockSquawkApp: App {
+struct SquawkerApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
     }
 }

@@ -32,12 +32,16 @@ struct LoginService {
         case badCredentials
         case noToken
         case server(Int)
+        case couldNotStoreToken
 
         var errorDescription: String? {
             switch self {
             case .badCredentials: "Incorrect username or password."
             case .noToken: "The server accepted the login but issued no token."
             case .server(let code): "The server returned \(code)."
+            case .couldNotStoreToken:
+                "Signed in, but the token could not be saved to the Keychain. "
+                + "You would be signed out again on next launch."
             }
         }
     }
@@ -58,7 +62,9 @@ struct LoginService {
               let token = obj["token"] as? String, !token.isEmpty else {
             throw LoginError.noToken
         }
-        TokenStore.save(token)
+        // Reported, not ignored: a silent failure here logs the user out on
+        // next launch and looks like the login never worked.
+        guard TokenStore.save(token) else { throw LoginError.couldNotStoreToken }
         return token
     }
 }
