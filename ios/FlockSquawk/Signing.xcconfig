@@ -1,0 +1,10 @@
+// Committed. Holds no account details.
+//
+// Signing identity is personal, so it lives in Signing.local.xcconfig, which is
+// gitignored. Copy Signing.local.xcconfig.example, fill in your team, and
+// regenerate. Without it the project still opens and builds for the Simulator;
+// only device builds need a team.
+APP_BUNDLE_ID = com.example.flocksquawk
+DEVELOPMENT_TEAM =
+
+#include? "Signing.local.xcconfig"

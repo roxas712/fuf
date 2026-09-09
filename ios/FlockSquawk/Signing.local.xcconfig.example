@@ -1,0 +1,8 @@
+// Copy to Signing.local.xcconfig (gitignored) and fill in your own values.
+//
+//   DEVELOPMENT_TEAM  Xcode > Settings > Accounts, or the 10-character Team ID
+//                     from any of your provisioning profiles.
+//   APP_BUNDLE_ID     Anything unique to you. Must not collide with another
+//                     app in your team.
+DEVELOPMENT_TEAM = ABCDE12345
+APP_BUNDLE_ID = com.yourname.flocksquawk
