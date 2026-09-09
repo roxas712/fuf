@@ -10,6 +10,8 @@ import FlockCore
 struct DashboardView: View {
     var onSignedOut: () -> Void
 
+    @StateObject private var location = LocationProvider()
+
     @State private var pending = 0
     @State private var camerasTotal = 0
     @State private var camerasSession: Int?      // nil until a session has run
@@ -22,6 +24,7 @@ struct DashboardView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     detectorCard
+                    locationCard
                     camerasCard
                     queueCard
                     accountCard
@@ -33,7 +36,10 @@ struct DashboardView: View {
             .safeAreaInset(edge: .top) { titleBar }
         }
         .preferredColorScheme(.dark)
-        .task { refresh() }
+        .task {
+            refresh()
+            await location.requestAuthorization()
+        }
     }
 
     private var titleBar: some View {
@@ -69,6 +75,38 @@ struct DashboardView: View {
                 .foregroundStyle(Theme.faint)
                 .disabled(true)
             }
+        }
+    }
+
+    /// Reflects `LocationProvider.readiness` and, when Precise Location is
+    /// off, blocks rather than warns: a map built from reduced-accuracy fixes
+    /// is confidently wrong, which is worse than the app refusing outright.
+    /// BLE pairing and session start arrive with Tasks 14-15; this card only
+    /// surfaces the permission state they will depend on.
+    private var locationCard: some View {
+        card(title: "Location", systemImage: "location.fill") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(locationStatusText)
+                    .displayFont(20)
+                    .foregroundStyle(location.readiness == .reducedAccuracy
+                                      ? Theme.heart : Theme.ink)
+                if location.readiness == .reducedAccuracy {
+                    Text("Precise Location is off, so camera positions can't be "
+                         + "trusted. Turn it on in Settings \u{2192} Privacy & "
+                         + "Security \u{2192} Location Services \u{2192} Squawker "
+                         + "before starting a session.")
+                        .font(.footnote).foregroundStyle(Theme.heart)
+                }
+            }
+        }
+    }
+
+    private var locationStatusText: String {
+        switch location.readiness {
+        case .notDetermined: "Waiting for permission"
+        case .denied: "Location access denied"
+        case .reducedAccuracy: "Precise Location required"
+        case .ready: "Ready"
         }
     }
 
