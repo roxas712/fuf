@@ -69,6 +69,18 @@ why the flash log is segmented rather than a ring buffer, and why an unpaired
 BLE client can subscribe to a notify characteristic no matter what permissions
 the characteristic carries.
 
+## Where the sightings go
+
+This repo is the device and the client. It does not include a backend — the app
+uploads to one you run, and mapping and reporting live there rather than on the
+phone. The app was kept a thin receive-stamp-upload client deliberately, so
+mapping could happen somewhere with a big screen, real compute and the full
+history.
+
+`docs/plans/2026-09-09-ios-app.md` gives the upload contract the client expects:
+bearer auth, `UNIQUE (session_id, seq)` idempotency, all-or-nothing batch
+validation, and a 500-record cap.
+
 ## License
 
 `firmware/` is GPL v3, derived from **FlockSquawk** by GitHub user **f1yaw4y**.
