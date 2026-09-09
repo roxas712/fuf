@@ -11,7 +11,9 @@ struct DashboardView: View {
     var onSignedOut: () -> Void
 
     @State private var pending = 0
-    @State private var devices = 0
+    @State private var camerasTotal = 0
+    @State private var camerasSession: Int?      // nil until a session has run
+    @State private var labelled = 0
     @State private var storeError: String?
 
     var body: some View {
@@ -20,9 +22,11 @@ struct DashboardView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     detectorCard
+                    camerasCard
                     queueCard
                     accountCard
                 }
+                .glassGroup()
                 .padding(.horizontal, 18)
                 .padding(.vertical, 16)
             }
@@ -68,12 +72,33 @@ struct DashboardView: View {
         }
     }
 
+    private var camerasCard: some View {
+        card(title: "Cameras seen", systemImage: "video.badge.waveform") {
+            HStack(spacing: 0) {
+                stat(camerasSession.map(String.init) ?? "—", "this session")
+                divider
+                stat("\(camerasTotal)", "all time")
+            }
+            // Counted from distinct MACs in the sightings, not from the devices
+            // table: the detector sends no DeviceInfo for a hidden SSID, so a
+            // count of named devices would silently miss those cameras.
+            if camerasTotal > labelled {
+                Text("\(camerasTotal - labelled) with no broadcast name")
+                    .font(.caption2).foregroundStyle(Theme.faint)
+            }
+            if camerasSession == nil {
+                Text("No session has run yet.")
+                    .font(.caption2).foregroundStyle(Theme.faint)
+            }
+        }
+    }
+
     private var queueCard: some View {
         card(title: "Local queue", systemImage: "tray.full") {
             HStack(spacing: 0) {
                 stat("\(pending)", "waiting to upload")
                 divider
-                stat("\(devices)", "cameras seen")
+                stat("\(labelled)", "named devices")
             }
             if let storeError {
                 Text(storeError).font(.caption).foregroundStyle(Theme.heart)
@@ -135,7 +160,11 @@ struct DashboardView: View {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let store = try SightingStore(path: dir.appendingPathComponent("sightings.sqlite").path)
             pending = try store.pendingCount()
-            devices = try store.deviceCount()
+            camerasTotal = try store.camerasSeen()
+            labelled = try store.deviceCount()
+            if let id = SessionMemory.currentSessionID {
+                camerasSession = try store.camerasSeen(inSession: id)
+            }
         } catch {
             storeError = "Local store unavailable: \(error)"
         }

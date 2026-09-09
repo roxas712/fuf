@@ -73,14 +73,10 @@ struct SignInView: View {
             Button(action: signIn) {
                 HStack(spacing: 8) {
                     if busy { ProgressView().tint(Theme.void) }
-                    Text(busy ? "Signing in" : "Sign in").fontWeight(.semibold)
+                    Text(busy ? "Signing in" : "Sign in")
                 }
-                .frame(maxWidth: .infinity).padding(.vertical, 15)
             }
-            .background(canSubmit ? Theme.accent : Theme.bg3,
-                        in: .rect(cornerRadius: Theme.R.md, style: .continuous))
-            .foregroundStyle(canSubmit ? Theme.void : Theme.faint)
-            .shadow(color: canSubmit ? Theme.glow.opacity(0.5) : .clear, radius: 16, y: 6)
+            .buttonStyle(PrimaryActionStyle(enabled: canSubmit))
             .disabled(!canSubmit)
             .animation(.easeOut(duration: 0.18), value: canSubmit)
         }

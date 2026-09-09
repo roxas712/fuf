@@ -68,14 +68,20 @@ extension Color {
 struct GlassPanel: ViewModifier {
     var radius: CGFloat = Theme.R.lg
     var tinted: Bool = false
+    /// Makes the glass respond to touch -- it flexes and brightens under a
+    /// finger. Only worth setting on something actually tappable; on a static
+    /// panel it is motion for its own sake.
+    var interactive: Bool = false
 
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content
-                .glassEffect(
-                    tinted ? .regular.tint(Theme.accent.opacity(0.22))
-                           : .regular,
-                    in: .rect(cornerRadius: radius))
+            let glass: Glass = {
+                var g: Glass = .regular
+                if tinted { g = g.tint(Theme.accent.opacity(0.22)) }
+                if interactive { g = g.interactive() }
+                return g
+            }()
+            content.glassEffect(glass, in: .rect(cornerRadius: radius))
         } else {
             content
                 .background(
@@ -93,15 +99,58 @@ struct GlassPanel: ViewModifier {
 }
 
 extension View {
-    func glassPanel(radius: CGFloat = Theme.R.lg, tinted: Bool = false) -> some View {
-        modifier(GlassPanel(radius: radius, tinted: tinted))
+    func glassPanel(radius: CGFloat = Theme.R.lg,
+                    tinted: Bool = false,
+                    interactive: Bool = false) -> some View {
+        modifier(GlassPanel(radius: radius, tinted: tinted, interactive: interactive))
     }
 
-    /// The site's display face is Clash Display, which is not on iOS and is not
-    /// bundled here. Rounded SF with tightened tracking is the nearest system
-    /// equivalent -- geometric, slightly condensed -- and costs no download.
+    /// Groups sibling glass so the system can blend and morph between the
+    /// pieces rather than compositing each one independently. Below iOS 26 it
+    /// is a plain passthrough.
+    @ViewBuilder
+    func glassGroup() -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer { self }
+        } else {
+            self
+        }
+    }
+
+    /// The web app's display face is Clash Display, which is not on iOS and is
+    /// not bundled here. Rounded SF with tightened tracking is the nearest
+    /// system equivalent -- geometric, slightly condensed -- and costs no
+    /// download.
     func displayFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> some View {
         font(.system(size: size, weight: weight, design: .rounded))
             .tracking(-0.4)
+    }
+}
+
+/// The primary action. Uses the system's prominent glass on iOS 26 so it picks
+/// up the real material and its interaction behaviour, and falls back to a
+/// filled accent capsule below that.
+struct PrimaryActionStyle: ButtonStyle {
+    var enabled: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        let label = configuration.label
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+        if #available(iOS 26.0, *) {
+            label
+                .foregroundStyle(enabled ? Theme.void : Theme.faint)
+                .glassEffect(enabled ? .regular.tint(Theme.accent).interactive()
+                                     : .regular,
+                             in: .rect(cornerRadius: Theme.R.md))
+                .opacity(configuration.isPressed ? 0.85 : 1)
+        } else {
+            label
+                .foregroundStyle(enabled ? Theme.void : Theme.faint)
+                .background(enabled ? Theme.accent : Theme.bg3,
+                            in: .rect(cornerRadius: Theme.R.md, style: .continuous))
+                .shadow(color: enabled ? Theme.glow.opacity(0.5) : .clear, radius: 16, y: 6)
+                .opacity(configuration.isPressed ? 0.85 : 1)
+        }
     }
 }

@@ -152,3 +152,51 @@ struct SightingStoreTests {
         #expect(s.backlogIsAlarming(threshold: 100, count: try s.pendingCount()) == false)
     }
 }
+
+// Camera counts come from the sightings themselves, not the devices table.
+//
+// `devices` is only written when a DeviceInfo notification arrives, and the
+// firmware skips that entirely for an empty identifier -- so a hidden-SSID
+// camera produces sightings and never appears there. Counting devices would
+// undercount exactly the cameras most worth noticing.
+extension SightingStoreTests {
+
+    @Test("total cameras counts distinct MACs across every session")
+    func totalCameras() throws {
+        let s = try makeStore()
+        try s.insert(sighting(seq: 1, session: "s1", mac: "aa:aa:aa:aa:aa:01"))
+        try s.insert(sighting(seq: 2, session: "s1", mac: "aa:aa:aa:aa:aa:01"))
+        try s.insert(sighting(seq: 3, session: "s1", mac: "aa:aa:aa:aa:aa:02"))
+        try s.insert(sighting(seq: 1, session: "s2", mac: "aa:aa:aa:aa:aa:03"))
+        #expect(try s.camerasSeen() == 3)
+    }
+
+    @Test("a camera seen in two sessions counts once in the total")
+    func sameCameraTwoSessions() throws {
+        let s = try makeStore()
+        try s.insert(sighting(seq: 1, session: "s1", mac: "aa:aa:aa:aa:aa:01"))
+        try s.insert(sighting(seq: 1, session: "s2", mac: "aa:aa:aa:aa:aa:01"))
+        #expect(try s.camerasSeen() == 1)
+    }
+
+    @Test("session cameras counts only that session")
+    func sessionCameras() throws {
+        let s = try makeStore()
+        try s.insert(sighting(seq: 1, session: "s1", mac: "aa:aa:aa:aa:aa:01"))
+        try s.insert(sighting(seq: 2, session: "s1", mac: "aa:aa:aa:aa:aa:02"))
+        try s.insert(sighting(seq: 1, session: "s2", mac: "aa:aa:aa:aa:aa:03"))
+        #expect(try s.camerasSeen(inSession: "s1") == 2)
+        #expect(try s.camerasSeen(inSession: "s2") == 1)
+        #expect(try s.camerasSeen(inSession: "nope") == 0)
+    }
+
+    @Test("a camera with no label still counts")
+    func unlabelledCameraCounts() throws {
+        // The hidden-SSID case. It never reaches the devices table, so a count
+        // taken from there would miss it entirely.
+        let s = try makeStore()
+        try s.insert(sighting(seq: 1, session: "s1", mac: "aa:aa:aa:aa:aa:09"))
+        #expect(try s.camerasSeen() == 1)
+        #expect(try s.deviceCount() == 0)      // no DeviceInfo ever arrived
+    }
+}

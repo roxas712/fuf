@@ -245,6 +245,32 @@ public final class SightingStore: @unchecked Sendable {
     /// How many distinct cameras have ever been labelled. Exposed as a method
     /// rather than letting callers run their own SQL: `scalar` stays internal
     /// so the app target cannot reach past this API into the schema.
+    /// Distinct cameras in the sightings themselves, all sessions.
+    ///
+    /// Counted here rather than from the `devices` table, which is only written
+    /// when a DeviceInfo notification arrives -- and the firmware skips that
+    /// entirely for an empty identifier. A hidden-SSID camera therefore produces
+    /// sightings and never appears in `devices`, so counting rows there would
+    /// undercount, and would miss precisely the cameras most worth noticing.
+    public func camerasSeen() throws -> Int {
+        try scalar("SELECT COUNT(DISTINCT mac) FROM sightings;")
+    }
+
+    /// Distinct cameras within one session.
+    public func camerasSeen(inSession sessionID: String) throws -> Int {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT COUNT(DISTINCT mac) FROM sightings WHERE session_id = ?1;",
+            -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_text(st, 1, sessionID, -1, Self.transient)
+        return sqlite3_step(st) == SQLITE_ROW ? Int(sqlite3_column_int64(st, 0)) : 0
+    }
+
+    /// How many cameras the device told us a name for. Always <= camerasSeen(),
+    /// because a hidden SSID never produces a DeviceInfo.
     public func deviceCount() throws -> Int {
         try scalar("SELECT COUNT(*) FROM devices;")
     }
