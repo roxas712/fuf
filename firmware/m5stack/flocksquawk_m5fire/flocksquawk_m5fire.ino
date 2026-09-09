@@ -49,6 +49,7 @@ static int radarDir = 1;
 static const int radarStep = 6;
 static uint32_t alertCount = 0;
 static char lastMacAddress[18] = "--";
+static char lastLabel[40] = "";
 static int8_t lastRssi = -100;
 static const size_t RSSI_GRAPH_POINTS = 60;
 static int8_t rssiHistory[RSSI_GRAPH_POINTS] = {0};
@@ -58,22 +59,23 @@ static uint16_t accentColor = TFT_GREEN;
 static uint8_t displayBrightness = 160;
 static const char* configPath = "/flocksquawk.json";
 
-static const int radarBoxX = 4;
-static const int radarBoxW = 312;
-static const int radarBoxH = 72;
-static const int radarBoxBottomMargin = 4;
-static const int radarBoxY = 240 - radarBoxH - radarBoxBottomMargin;
-static const int radarLineInsetX = 2;
-static const int radarLineInsetY = 2;
+// 320x240. Laid out so the one question that matters while driving -- is a
+// camera near me right now -- is answerable at a glance, and everything else
+// is subordinate to it.
+static const int statusBarH   = 20;     // BT, channel, battery
+static const int stateY       = 34;     // the big verdict
+static const int stateSubY    = 78;     // its detail line
+static const int signalLabelY = 104;
+static const int rssiBoxX     = 8;
+static const int rssiBoxY     = 116;
+static const int rssiBoxW     = 304;
+static const int rssiBoxH     = 56;
+static const int countersY    = 188;    // labels
+static const int countersValY = 204;    // values
 
-static const int rssiBoxX = 200;
-static const int rssiBoxY = 70;
-static const int rssiBoxW = 116;
-static const int rssiBoxH = 70;
-
+// Kept: other sketch variants and the alert popup still reference these.
 static const int scanTextX = 4;
 static const int scanTextY = 24;
-static uint8_t scanAnimStep = 0;
 static const int infoTextBaseY = scanTextY + 18;
 
 enum class MenuMode {
@@ -581,6 +583,31 @@ void setup() {
     bleReporter.initialize();
     bleReporter.setStatus(detectionLog.stored(), detectionLog.capacity());
 
+    // Settings arriving from the phone. Runs on the loop task via
+    // bleReporter.tick(), so touching the display, the speaker and LittleFS is
+    // safe here in a way it would not be in the BLE callback itself.
+    bleReporter.onSettingsChanged([](const DeviceSettings& s) {
+        audioSystem.setVolume(s.volume / 100.0f);
+        displayBrightness = s.brightness;
+        M5.Display.setBrightness(displayBrightness);
+        heartbeatEnabled = s.heartbeat;
+        if (s.accentIndex < accentOptionCount) {
+            accentIndex = s.accentIndex;
+            accentColor = accentOptions[accentIndex].color;
+        }
+        // Battery saver blanks the screen, so it is applied through the same
+        // path the menu uses rather than by poking the flag directly.
+        if (s.batterySaver != batterySaverEnabled) {
+            batterySaverEnabled = s.batterySaver;
+            setDisplayPower(!batterySaverEnabled);
+            if (!batterySaverEnabled) resetHomeUi();
+        }
+        saveSettingsToSd();
+        bleReporter.setSettings(currentSettings());
+        Serial.println("[Settings] Applied from phone and saved");
+    });
+    bleReporter.setSettings(currentSettings());
+
     Serial.println("System operational - scanning for targets");
     Serial.println();
     
@@ -588,150 +615,117 @@ void setup() {
 }
 
 #if ENABLE_HOME_UI
+// Centres a string of the given text size on a 320px-wide screen.
+static void drawCentered(const String& s, int y, int size, uint16_t fg, uint16_t bg) {
+    M5.Display.setTextSize(size);
+    M5.Display.setTextColor(fg, bg);
+    int w = s.length() * 6 * size;
+    M5.Display.drawString(s, (320 - w) / 2, y);
+    M5.Display.setTextSize(1);
+}
+
 static void drawHomeFrame() {
     M5.Display.clear();
     M5.Display.setTextSize(1);
-    M5.Display.setCursor(0, 0);
-    
-    // Top bar
-    M5.Display.drawFastHLine(0, 20, 320, TFT_DARKGREY);
-    M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
-    M5.Display.drawString("VOL", 4, 4);
-    M5.Display.drawString("RAM", 110, 4);
-    M5.Display.drawString("BAT", 250, 4);
-    
-    // Info labels
-    M5.Display.setTextColor(TFT_CYAN, TFT_BLACK);
-    int textBaseY = infoTextBaseY;
-    M5.Display.drawString("WiFi CH:", 4, textBaseY);
-    M5.Display.drawString("Last MAC:", 4, textBaseY + 18);
-    M5.Display.drawString("Alerts:", 4, textBaseY + 36);
-    M5.Display.drawString("RSSI", rssiBoxX, rssiBoxY - 12);
-    M5.Display.drawString("BT", 292, scanTextY);
-    
-    // RSSI graph frame
+    M5.Display.drawFastHLine(0, statusBarH, 320, TFT_DARKGREY);
+
+    // Signal section label and frame.
+    M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    M5.Display.drawString("SIGNAL", rssiBoxX, signalLabelY);
     M5.Display.drawRect(rssiBoxX, rssiBoxY, rssiBoxW, rssiBoxH, TFT_DARKGREY);
-    
-    // Radar frame (empty box)
-    M5.Display.drawRect(radarBoxX, radarBoxY, radarBoxW, radarBoxH, TFT_DARKGREY);
+
+    // Counter labels. Values are drawn by updateHomeStats.
+    M5.Display.drawFastHLine(0, countersY - 8, 320, TFT_DARKGREY);
+    M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    M5.Display.drawString("ALERTS",  20, countersY);
+    M5.Display.drawString("CAMERAS", 130, countersY);
+    M5.Display.drawString("CHANNEL", 245, countersY);
 }
 
+/// The verdict line. This is the whole point of the screen: a driver should be
+/// able to read it in the time they can safely look away, which is why it is
+/// size 3-4 and colour-coded rather than a row of small labels.
 static void updateScanningBanner() {
-    static const char* animFrames[] = {
-        "", ".", "..", "..."
-    };
-    const uint8_t frameCount = sizeof(animFrames) / sizeof(animFrames[0]);
-    const char* dots = animFrames[scanAnimStep % frameCount];
-    scanAnimStep++;
-    
-    M5.Display.fillRect(scanTextX, scanTextY, 260, 16, TFT_BLACK);
-    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Display.setCursor(scanTextX, scanTextY);
-    M5.Display.print("Scanning for Flock signatures");
-    M5.Display.print(dots);
+    static bool lastNear = false;
+    static uint32_t lastRepaint = 0;
+    bool near = threatEngine.cameraNearby(millis());
+
+    // Repaint on change, or every 2s to refresh the detail line.
+    if (near == lastNear && millis() - lastRepaint < 2000) return;
+    lastNear = near;
+    lastRepaint = millis();
+
+    M5.Display.fillRect(0, stateY - 2, 320, 62, TFT_BLACK);
+
+    if (near) {
+        drawCentered("CAMERA NEAR", stateY, 3, TFT_RED, TFT_BLACK);
+        String detail = strlen(lastLabel) ? String(lastLabel) : String(lastMacAddress);
+        if (detail.length() > 26) detail = detail.substring(0, 26);
+        drawCentered(detail, stateSubY, 1, TFT_ORANGE, TFT_BLACK);
+    } else {
+        drawCentered("CLEAR", stateY, 4, TFT_GREEN, TFT_BLACK);
+        drawCentered("scanning", stateSubY, 1, TFT_DARKGREY, TFT_BLACK);
+    }
 }
 
 static void updateRssiGraph() {
     M5.Display.fillRect(rssiBoxX + 1, rssiBoxY + 1, rssiBoxW - 2, rssiBoxH - 2, TFT_BLACK);
-    
-    size_t points = rssiFilled ? RSSI_GRAPH_POINTS : rssiIndex;
-    if (points < 2) return;
-    
-    int graphW = rssiBoxW - 2;
-    int graphH = rssiBoxH - 2;
-    int x0 = rssiBoxX + 1;
-    int y0 = rssiBoxY + 1;
-    
-    auto mapRssi = [graphH](int8_t rssi) {
-        if (rssi < -100) rssi = -100;
-        if (rssi > -30) rssi = -30;
-        int norm = rssi + 100; // 0..70
-        return graphH - 1 - (norm * (graphH - 1) / 70);
-    };
-    
-    for (size_t i = 1; i < points; i++) {
-        size_t idx0 = (rssiIndex + RSSI_GRAPH_POINTS - points + i - 1) % RSSI_GRAPH_POINTS;
-        size_t idx1 = (rssiIndex + RSSI_GRAPH_POINTS - points + i) % RSSI_GRAPH_POINTS;
-        
-        int xA = x0 + static_cast<int>((i - 1) * (graphW - 1) / (points - 1));
-        int xB = x0 + static_cast<int>(i * (graphW - 1) / (points - 1));
-        int yA = y0 + mapRssi(rssiHistory[idx0]);
-        int yB = y0 + mapRssi(rssiHistory[idx1]);
-        
-        M5.Display.drawLine(xA, yA, xB, yB, accentColor);
+
+    size_t count = rssiFilled ? RSSI_GRAPH_POINTS : rssiIndex;
+    if (count >= 2) {
+        int usableW = rssiBoxW - 2;
+        int usableH = rssiBoxH - 2;
+        for (size_t i = 1; i < count; i++) {
+            size_t idxA = rssiFilled ? (rssiIndex + i - 1) % RSSI_GRAPH_POINTS : i - 1;
+            size_t idxB = rssiFilled ? (rssiIndex + i)     % RSSI_GRAPH_POINTS : i;
+            // -100..-20 dBm mapped to the box height.
+            int a = constrain(rssiHistory[idxA], -100, -20);
+            int b = constrain(rssiHistory[idxB], -100, -20);
+            int yA = rssiBoxY + 1 + usableH - ((a + 100) * usableH) / 80;
+            int yB = rssiBoxY + 1 + usableH - ((b + 100) * usableH) / 80;
+            int xA = rssiBoxX + 1 + ((i - 1) * usableW) / (RSSI_GRAPH_POINTS - 1);
+            int xB = rssiBoxX + 1 + (i * usableW) / (RSSI_GRAPH_POINTS - 1);
+            M5.Display.drawLine(xA, yA, xB, yB, accentColor);
+        }
     }
+
+    // Current value, large, at the right of the section label row.
+    M5.Display.fillRect(230, signalLabelY - 4, 86, 18, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(lastRssi > -60 ? TFT_ORANGE : TFT_WHITE, TFT_BLACK);
+    M5.Display.drawString(String(lastRssi) + "dBm", 230, signalLabelY - 4);
+    M5.Display.setTextSize(1);
 }
 
 static void updateHomeStats() {
-    // Volume
-    uint8_t volPercent = static_cast<uint8_t>(roundf(audioSystem.getVolumeLevel() * 100.0f));
-    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Display.fillRect(40, 2, 60, 16, TFT_BLACK);
-    M5.Display.drawString(String(volPercent) + "%", 40, 4);
-    
-    // RAM utilization
-    uint32_t heapSize = ESP.getHeapSize();
-    uint32_t freeHeap = ESP.getFreeHeap();
-    uint8_t ramPercent = heapSize > 0 ? static_cast<uint8_t>(((heapSize - freeHeap) * 100) / heapSize) : 0;
-    M5.Display.fillRect(140, 2, 60, 16, TFT_BLACK);
-    M5.Display.drawString(String(ramPercent) + "%", 140, 4);
-    
-    // Battery
+    // --- status bar: BLE, then battery at the right ---
+    M5.Display.fillRect(0, 0, 320, statusBarH - 1, TFT_BLACK);
+    M5.Display.setTextSize(1);
+
+    bool linked = bleReporter.isConnected();
+    M5.Display.setTextColor(linked ? TFT_CYAN : TFT_DARKGREY, TFT_BLACK);
+    M5.Display.drawString(linked ? "PHONE LINKED" : "NO PHONE", 4, 6);
+
     int battery = M5.Power.getBatteryLevel();
     bool charging = M5.Power.isCharging();
-    int barX = 270;
-    int barY = 2;
-    int barW = 36;
-    int barH = 14;
+    int barX = 268, barY = 4, barW = 36, barH = 12;
     M5.Display.drawRect(barX, barY, barW, barH, TFT_WHITE);
+    M5.Display.fillRect(barX + barW, barY + 3, 3, 6, TFT_WHITE);
     int fillW = (battery * (barW - 2)) / 100;
-    M5.Display.fillRect(barX + 1, barY + 1, barW - 2, barH - 2, TFT_BLACK);
-    M5.Display.fillRect(barX + 1, barY + 1, fillW, barH - 2, TFT_GREEN);
-    M5.Display.fillRect(barX + barW, barY + 4, 3, 6, TFT_WHITE);
-    M5.Display.fillRect(310, 2, 10, 16, TFT_BLACK);
-    if (charging) {
-        M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        M5.Display.drawString("+", 310, 3);
-    }
-    
-    // WiFi channel
+    uint16_t battColor = battery < 20 ? TFT_RED : (charging ? TFT_CYAN : TFT_GREEN);
+    M5.Display.fillRect(barX + 1, barY + 1, fillW, barH - 2, battColor);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-    M5.Display.fillRect(70, infoTextBaseY - 2, 50, 16, TFT_BLACK);
-    M5.Display.drawString(String(RadioScannerManager::getCurrentWifiChannel()), 70, infoTextBaseY);
-    
-    // Bluetooth indicator
-    bool btActive = RadioScannerManager::isBluetoothScanning();
-    uint16_t btColor = btActive ? TFT_BLUE : TFT_DARKGREY;
-    M5.Display.fillCircle(312, scanTextY + 6, 5, btColor);
-    
-    // Last MAC
-    M5.Display.fillRect(70, infoTextBaseY + 16, 120, 16, TFT_BLACK);
-    M5.Display.drawString(String(lastMacAddress), 70, infoTextBaseY + 18);
-    
-    // Alerts count
-    M5.Display.fillRect(60, infoTextBaseY + 34, 80, 16, TFT_BLACK);
-    M5.Display.drawString(String(alertCount), 60, infoTextBaseY + 36);
-}
+    M5.Display.drawString(String(battery) + "%", 232, 6);
 
-static void updateRadarSweep() {
-    int radarX0 = radarBoxX + radarLineInsetX;
-    int radarY0 = radarBoxY + radarLineInsetY;
-    int radarW = radarBoxW - (radarLineInsetX * 2);
-    int radarH = radarBoxH - (radarLineInsetY * 2);
-    
-    // Erase previous line
-    M5.Display.drawFastVLine(radarX0 + radarX, radarY0, radarH, TFT_BLACK);
-    
-    radarX += radarDir * radarStep;
-    if (radarX <= 0) {
-        radarX = 0;
-        radarDir = 1;
-    } else if (radarX >= radarW - 1) {
-        radarX = radarW - 1;
-        radarDir = -1;
-    }
-    
-    M5.Display.drawFastVLine(radarX0 + radarX, radarY0, radarH, accentColor);
+    // --- counters ---
+    M5.Display.fillRect(0, countersValY, 320, 20, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(alertCount ? TFT_ORANGE : TFT_WHITE, TFT_BLACK);
+    M5.Display.drawString(String(alertCount), 20, countersValY);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.drawString(String(detectionLog.uniqueDevices()), 130, countersValY);
+    M5.Display.drawString(String(RadioScannerManager::getCurrentWifiChannel()), 245, countersValY);
+    M5.Display.setTextSize(1);
 }
 
 static void drawMenuFrame() {
@@ -851,8 +845,19 @@ static void resetHomeUi() {
     updateRssiGraph();
     updateScanningBanner();
     lastUiUpdate = millis();
-    lastRadarUpdate = millis();
     lastScanAnimUpdate = millis();
+}
+
+/// The device's live settings, gathered for publication over BLE. One reader so
+/// the characteristic and the on-device menu cannot drift apart.
+static DeviceSettings currentSettings() {
+    DeviceSettings s;
+    s.volume       = (uint8_t)roundf(audioSystem.getVolumeLevel() * 100.0f);
+    s.brightness   = displayBrightness;
+    s.heartbeat    = heartbeatEnabled;
+    s.batterySaver = batterySaverEnabled;
+    s.accentIndex  = accentIndex;
+    return s;
 }
 
 static void applyDefaultSettings() {
@@ -1158,7 +1163,6 @@ static void handleHomeScreen() {
         radarDir = 1;
         drawHomeFrame();
         lastUiUpdate = 0;
-        lastRadarUpdate = 0;
     }
     
     if (!homeScreenActive) return;
@@ -1182,10 +1186,6 @@ static void handleHomeScreen() {
         lastScanAnimUpdate = now;
     }
     
-    if (now - lastRadarUpdate >= 15) {
-        updateRadarSweep();
-        lastRadarUpdate = now;
-    }
 }
 #endif
 
@@ -1263,6 +1263,8 @@ void loop() {
         threatCopy = pendingThreat;
         threatPending = false;
         portEXIT_CRITICAL(&threatMux);
+        strncpy(lastLabel, threatCopy.identifier, sizeof(lastLabel) - 1);
+        lastLabel[sizeof(lastLabel) - 1] = '\0';
         reporter.handleThreatDetection(threatCopy);
         detectionLog.handleThreatDetection(threatCopy);
         bleReporter.handleThreatDetection(threatCopy);
@@ -1271,6 +1273,31 @@ void loop() {
         // leaving it frozen at the value setup() wrote, which made a mid-session
         // read report a number that had not moved since power-on.
         bleReporter.setStatus(detectionLog.stored(), detectionLog.capacity());
+
+    // Settings arriving from the phone. Runs on the loop task via
+    // bleReporter.tick(), so touching the display, the speaker and LittleFS is
+    // safe here in a way it would not be in the BLE callback itself.
+    bleReporter.onSettingsChanged([](const DeviceSettings& s) {
+        audioSystem.setVolume(s.volume / 100.0f);
+        displayBrightness = s.brightness;
+        M5.Display.setBrightness(displayBrightness);
+        heartbeatEnabled = s.heartbeat;
+        if (s.accentIndex < accentOptionCount) {
+            accentIndex = s.accentIndex;
+            accentColor = accentOptions[accentIndex].color;
+        }
+        // Battery saver blanks the screen, so it is applied through the same
+        // path the menu uses rather than by poking the flag directly.
+        if (s.batterySaver != batterySaverEnabled) {
+            batterySaverEnabled = s.batterySaver;
+            setDisplayPower(!batterySaverEnabled);
+            if (!batterySaverEnabled) resetHomeUi();
+        }
+        saveSettingsToSd();
+        bleReporter.setSettings(currentSettings());
+        Serial.println("[Settings] Applied from phone and saved");
+    });
+    bleReporter.setSettings(currentSettings());
         if (threatCopy.shouldAlert) {
             triggerAlert(true);
         } else if (threatCopy.alertLevel == ALERT_SUSPICIOUS && threatCopy.firstDetection) {

@@ -332,6 +332,15 @@ public:
 
     void reportHeartbeatCause() { tracker.reportInRange(millis()); }
 
+    /// Whether a suspicious device was heard within PRESENCE_FRESH_MS.
+    ///
+    /// The tracker has always known this -- it is what gates the heartbeat --
+    /// but nothing could ask it, so the screen could only report the last MAC
+    /// it saw, which says nothing about whether that camera is still there.
+    bool cameraNearby(uint32_t nowMs) const {
+        return tracker.hasHighConfidenceInRange(nowMs);
+    }
+
 private:
     DeviceTracker tracker;
     uint32_t lastHeartbeatMs;

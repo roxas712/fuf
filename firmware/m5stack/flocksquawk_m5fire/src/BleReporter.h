@@ -5,6 +5,7 @@
 #include <M5Unified.h>
 #include <NimBLEDevice.h>
 #include <esp_random.h>
+#include <functional>
 #include "EventBus.h"
 #include "SightingRecord.h"
 #include "DeviceTable.h"
@@ -26,6 +27,49 @@
 // is implemented later, give it a new one so an old client cannot bind to a
 // characteristic that means something different now.
 #define FS_CHAR_STATUS      "6f1d0006-b5a3-f393-e0a9-e50e24dcca9e"
+// 0007, not 0005: that UUID belonged to LogControl and is retired.
+#define FS_CHAR_SETTINGS    "6f1d0007-b5a3-f393-e0a9-e50e24dcca9e"
+
+/// Device settings, as carried over BLE.
+///
+///     [0] format version
+///     [1] volume      0..100
+///     [2] brightness  0..255
+///     [3] flags       bit0 heartbeat, bit1 battery saver
+///     [4] accent index
+///     [5..7] reserved
+struct DeviceSettings {
+    uint8_t volume       = 40;
+    uint8_t brightness   = 160;
+    bool    heartbeat    = true;
+    bool    batterySaver = false;
+    uint8_t accentIndex  = 0;
+
+    static constexpr size_t WIRE_SIZE = 8;
+    static constexpr uint8_t WIRE_VERSION = 1;
+
+    void encode(uint8_t* out) const {
+        memset(out, 0, WIRE_SIZE);
+        out[0] = WIRE_VERSION;
+        out[1] = volume;
+        out[2] = brightness;
+        out[3] = (heartbeat ? 0x01 : 0) | (batterySaver ? 0x02 : 0);
+        out[4] = accentIndex;
+    }
+
+    /// Rejects anything that is not exactly the expected size and version, so a
+    /// future format cannot be half-applied by an older build.
+    static bool decode(const uint8_t* raw, size_t len, DeviceSettings& out) {
+        if (len != WIRE_SIZE || raw[0] != WIRE_VERSION) return false;
+        if (raw[1] > 100) return false;                 // volume is a percentage
+        out.volume       = raw[1];
+        out.brightness   = raw[2];
+        out.heartbeat    = (raw[3] & 0x01) != 0;
+        out.batterySaver = (raw[3] & 0x02) != 0;
+        out.accentIndex  = raw[4];
+        return true;
+    }
+};
 
 class BleReporter : public NimBLEServerCallbacks,
                     public NimBLECharacteristicCallbacks {
@@ -83,6 +127,15 @@ public:
                          NIMBLE_PROPERTY::NOTIFY | READ_SECURE);
         timeSync   = svc->createCharacteristic(FS_CHAR_TIMESYNC,   READ_SECURE);
         status     = svc->createCharacteristic(FS_CHAR_STATUS,     READ_SECURE);
+        // The only writable characteristic in the service. WRITE_AUTHEN, not
+        // merely WRITE_ENC: encryption alone is satisfied by Just Works
+        // pairing, which would let an unauthenticated peer change the
+        // device's settings.
+        settings   = svc->createCharacteristic(FS_CHAR_SETTINGS,
+                         READ_SECURE | NIMBLE_PROPERTY::WRITE
+                                     | NIMBLE_PROPERTY::WRITE_ENC
+                                     | NIMBLE_PROPERTY::WRITE_AUTHEN);
+        settings->setCallbacks(this);
 
         // Only the notify characteristics need subscribe visibility.
         sighting->setCallbacks(this);
@@ -235,11 +288,29 @@ public:
 
     bool isConnected() const { return connected; }
 
+    /// Publishes the device's current settings so a connecting phone reads real
+    /// values rather than showing its own defaults and then overwriting them.
+    void setSettings(const DeviceSettings& s) {
+        if (settings == nullptr) return;
+        uint8_t buf[DeviceSettings::WIRE_SIZE];
+        s.encode(buf);
+        settings->setValue(buf, sizeof(buf));
+    }
+
+    /// Registered by the sketch. Invoked from tick(), on the loop task.
+    void onSettingsChanged(std::function<void(const DeviceSettings&)> fn) {
+        settingsHandler = std::move(fn);
+    }
+
     // Call from loop(). All display work happens here, on the Arduino task,
     // because the BLE callbacks run on a stack that cannot afford M5GFX.
     // Returns true on the transition where the pairing screen comes down, so
     // the caller can repaint whatever it owns underneath.
     bool tick() {
+        if (settingsPending) {
+            settingsPending = false;
+            if (settingsHandler) settingsHandler(pendingSettings);
+        }
         if (showPasskeyPending) {
             showPasskeyPending = false;
             clearPasskeyPending = false;
@@ -297,6 +368,31 @@ public:
     // code from setSecurityPasskey() without asking. Kept because it is the
     // correct hook if the passkey ever becomes dynamic per pairing, and
     // because returning the wrong value here would be a silent trap.
+    /// Runs on the BLE host task. It stores and returns -- nothing here may
+    /// touch the display, the speaker or LittleFS. Applying a brightness change
+    /// from this thread drives SPI concurrently with the loop task, which is
+    /// what crashed the device when the pairing passkey was drawn here. loop()
+    /// picks it up through tick().
+    void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo& info) override {
+        if (chr != settings) return;
+        if (!info.isAuthenticated()) {
+            Serial.println("[BLE] Settings write refused: link not authenticated");
+            return;
+        }
+        auto value = chr->getValue();
+        DeviceSettings incoming;
+        if (!DeviceSettings::decode(value.data(), value.size(), incoming)) {
+            Serial.printf("[BLE] Settings write rejected: %u bytes\n",
+                          (unsigned)value.size());
+            return;
+        }
+        pendingSettings = incoming;
+        settingsPending = true;
+        Serial.printf("[BLE] Settings write queued: vol=%u bright=%u hb=%d save=%d\n",
+                      incoming.volume, incoming.brightness,
+                      incoming.heartbeat, incoming.batterySaver);
+    }
+
     void onRead(NimBLECharacteristic* chr, NimBLEConnInfo& info) override {
         Serial.printf("[BLE] Read %s (%u bytes), authenticated=%d\n",
                       chr->getUUID().toString().c_str(),
@@ -387,6 +483,10 @@ private:
     NimBLECharacteristic* deviceInfo = nullptr;
     NimBLECharacteristic* timeSync   = nullptr;
     NimBLECharacteristic* status     = nullptr;
+    NimBLECharacteristic* settings   = nullptr;
+    std::function<void(const DeviceSettings&)> settingsHandler;
+    volatile bool  settingsPending = false;
+    DeviceSettings pendingSettings;
     bool                  connected  = false;
 };
 

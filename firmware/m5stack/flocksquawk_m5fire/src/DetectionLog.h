@@ -148,6 +148,10 @@ public:
     }
 
     bool     isReady()  const { return ready; }
+
+    /// Distinct MACs seen since boot. Shown on the home screen, where "how many
+    /// cameras" is a more useful number than how many sightings they produced.
+    uint16_t uniqueDevices() const { return devices.size(); }
     uint32_t stored()   const { return index.totalRecords(); }
     uint32_t capacity() const { return SEGMENT_COUNT * RECORDS_PER_SEGMENT; }
 
