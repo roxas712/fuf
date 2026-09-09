@@ -4,28 +4,23 @@ import FlockCore
 /// The management screen reached after signing in.
 ///
 /// It shows real state where real state exists -- the local queue is live, read
-/// straight from the SQLite store -- and says plainly what is not built yet
-/// rather than faking it. Session control arrives with the BLE and location
-/// work in Tasks 13-15.
+/// straight from the SQLite store. Session control itself belongs to
+/// `SessionController`: this view only observes it and drives it through
+/// `start()`/`stop()`.
 struct DashboardView: View {
     var onSignedOut: () -> Void
 
-    @StateObject private var location = LocationProvider()
-    @StateObject private var peripheral = PeripheralClient()
+    // Owns BLE, location, the store, and the upload loop. The dashboard only
+    // observes it and drives it through start()/stop() -- it makes no
+    // CoreBluetooth or CoreLocation calls of its own.
+    @StateObject private var session = SessionController()
 
     @State private var showingDeviceSettings = false
 
-    @State private var pending = 0
     @State private var camerasTotal = 0
     @State private var camerasSession: Int?      // nil until a session has run
     @State private var labelled = 0
     @State private var storeError: String?
-
-    // Received this launch, in memory only. Not the queue's counts -- those
-    // come from SightingStore once Task 15 wires storage -- just proof the
-    // radio is live.
-    @State private var sightingsSeen = 0
-    @State private var labelsSeen = 0
 
     var body: some View {
         ZStack {
@@ -47,13 +42,15 @@ struct DashboardView: View {
         .preferredColorScheme(.dark)
         .task {
             refresh()
-            peripheral.onSighting = { _ in sightingsSeen += 1 }
-            peripheral.onDeviceLabel = { _ in labelsSeen += 1 }
-            peripheral.start()
-            await location.requestAuthorization()
+            await session.location.requestAuthorization()
+        }
+        .onChange(of: session.status) { _, newStatus in
+            // Recount once a session stops, so "cameras this session" and
+            // the all-time stats catch up with what it just recorded.
+            if newStatus != .running { refresh() }
         }
         .sheet(isPresented: $showingDeviceSettings) {
-            SettingsView(peripheral: peripheral)
+            SettingsView(peripheral: session.peripheral)
         }
     }
 
@@ -64,12 +61,28 @@ struct DashboardView: View {
             Text("Squawker").displayFont(19, weight: .semibold)
                 .foregroundStyle(Theme.ink)
             Spacer()
-            Circle().fill(Theme.faint).frame(width: 7, height: 7)
-            Text("idle").font(.caption).foregroundStyle(Theme.muted)
+            Circle().fill(titleBarDotColor).frame(width: 7, height: 7)
+            Text(titleBarStatusText).font(.caption).foregroundStyle(Theme.muted)
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
         .glassPanel(radius: 999)
         .padding(.horizontal, 18).padding(.top, 6)
+    }
+
+    private var titleBarDotColor: Color {
+        switch session.status {
+        case .idle:    Theme.faint
+        case .running: Theme.green
+        case .blocked: Theme.heart
+        }
+    }
+
+    private var titleBarStatusText: String {
+        switch session.status {
+        case .idle:    "idle"
+        case .running: "recording"
+        case .blocked: "blocked"
+        }
     }
 
     private var detectorCard: some View {
@@ -81,23 +94,22 @@ struct DashboardView: View {
                         .displayFont(22).foregroundStyle(Theme.ink)
                 }
                 HStack(spacing: 0) {
-                    stat("\(sightingsSeen)", "sightings")
+                    stat("\(session.sightingCount)", "sightings")
                     divider
-                    stat("\(labelsSeen)", "device labels")
+                    stat("\(session.labelsSeen)", "device labels")
                 }
-                Text("Session control arrives with Task 15. This is the live "
-                     + "Bluetooth link on its own: a subscribed link with zero "
-                     + "counts above means paired-but-idle, not broken -- give it "
-                     + "a moment for the first notification.")
-                    .font(.footnote).foregroundStyle(Theme.muted)
+                detectorFootnote
                 Button {
+                    Task {
+                        if session.status == .running { session.stop() }
+                        else { await session.start() }
+                    }
                 } label: {
-                    Text("Start session").fontWeight(.semibold)
+                    Text(session.status == .running ? "Stop session" : "Start session")
+                        .fontWeight(.semibold)
                         .frame(maxWidth: .infinity).padding(.vertical, 13)
                 }
-                .background(Theme.bg3, in: .rect(cornerRadius: Theme.R.md, style: .continuous))
-                .foregroundStyle(Theme.faint)
-                .disabled(true)
+                .buttonStyle(PrimaryActionStyle(enabled: true))
 
                 Button {
                     showingDeviceSettings = true
@@ -109,8 +121,24 @@ struct DashboardView: View {
         }
     }
 
+    /// Whatever is most relevant right now: a block reason outranks a
+    /// transient error, which outranks the steady-state explanation of what
+    /// zero counts above actually mean.
+    @ViewBuilder
+    private var detectorFootnote: some View {
+        if case .blocked(let reason) = session.status {
+            Text(reason).font(.footnote).foregroundStyle(Theme.heart)
+        } else if let lastError = session.lastError {
+            Text(lastError).font(.footnote).foregroundStyle(Theme.gold)
+        } else {
+            Text("A subscribed link with zero counts above means paired-but-idle, "
+                 + "not broken -- give it a moment for the first notification.")
+                .font(.footnote).foregroundStyle(Theme.muted)
+        }
+    }
+
     private var detectorStatusText: String {
-        switch peripheral.state {
+        switch session.peripheral.state {
         case .idle:          "Not connected"
         case .poweredOff:    "Bluetooth is off"
         case .unauthorized:  "Bluetooth access denied"
@@ -123,7 +151,7 @@ struct DashboardView: View {
     }
 
     private var detectorStatusColor: Color {
-        switch peripheral.state {
+        switch session.peripheral.state {
         case .subscribed:                     Theme.green
         case .needsRepair, .unauthorized:     Theme.heart
         case .poweredOff:                     Theme.gold
@@ -135,15 +163,13 @@ struct DashboardView: View {
     /// Reflects `LocationProvider.readiness` and, when Precise Location is
     /// off, blocks rather than warns: a map built from reduced-accuracy fixes
     /// is confidently wrong, which is worse than the app refusing outright.
-    /// BLE pairing and session start arrive with Tasks 14-15; this card only
-    /// surfaces the permission state they will depend on.
     private var locationCard: some View {
         card(title: "Location", systemImage: "location.fill") {
             VStack(alignment: .leading, spacing: 10) {
                 Text(locationStatusText)
                     .displayFont(20)
                     .foregroundStyle(locationStatusColor)
-                switch location.readiness {
+                switch session.location.readiness {
                 case .reducedAccuracy:
                     Text("Precise Location is off, so camera positions can't be "
                          + "trusted. Turn it on in Settings \u{2192} Privacy & "
@@ -159,7 +185,7 @@ struct DashboardView: View {
                          + "iOS asks for background access after the app has used "
                          + "location for a while \u{2014} or you can grant it now.")
                         .font(.footnote).foregroundStyle(Theme.gold)
-                    Button("Allow always") { location.requestAlwaysUpgrade() }
+                    Button("Allow always") { session.location.requestAlwaysUpgrade() }
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(Theme.accent)
 
@@ -176,7 +202,7 @@ struct DashboardView: View {
     }
 
     private var locationStatusText: String {
-        switch location.readiness {
+        switch session.location.readiness {
         case .notDetermined:   "Waiting for permission"
         case .denied:          "Location access denied"
         case .reducedAccuracy: "Precise Location required"
@@ -186,7 +212,7 @@ struct DashboardView: View {
     }
 
     private var locationStatusColor: Color {
-        switch location.readiness {
+        switch session.location.readiness {
         case .reducedAccuracy, .denied: Theme.heart
         case .foregroundOnly:           Theme.gold
         case .notDetermined:            Theme.muted
@@ -218,7 +244,7 @@ struct DashboardView: View {
     private var queueCard: some View {
         card(title: "Local queue", systemImage: "tray.full") {
             HStack(spacing: 0) {
-                stat("\(pending)", "waiting to upload")
+                stat("\(session.pendingCount)", "waiting to upload")
                 divider
                 stat("\(labelled)", "named devices")
             }
@@ -273,15 +299,18 @@ struct DashboardView: View {
         .glassPanel()
     }
 
-    /// Reads the same SQLite store the uploader will use, so these counts are
-    /// the real thing rather than a mock -- and they persist across launches.
+    /// Reads a second, independent connection to the same SQLite file the
+    /// session's own store uses -- safe under WAL, and simpler than reaching
+    /// into `SessionController`'s private store just for these all-time,
+    /// occasionally-refreshed counts. `session.pendingCount` is the live
+    /// figure the queue card actually shows; this fills in what it does not
+    /// track (all-time and per-session camera counts, named-device count).
     private func refresh() {
         do {
             let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                                in: .userDomainMask)[0]
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let store = try SightingStore(path: dir.appendingPathComponent("sightings.sqlite").path)
-            pending = try store.pendingCount()
             camerasTotal = try store.camerasSeen()
             labelled = try store.deviceCount()
             if let id = SessionMemory.currentSessionID {
