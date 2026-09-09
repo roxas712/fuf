@@ -13,6 +13,8 @@ struct DashboardView: View {
     @StateObject private var location = LocationProvider()
     @StateObject private var peripheral = PeripheralClient()
 
+    @State private var showingDeviceSettings = false
+
     @State private var pending = 0
     @State private var camerasTotal = 0
     @State private var camerasSession: Int?      // nil until a session has run
@@ -49,6 +51,9 @@ struct DashboardView: View {
             peripheral.onDeviceLabel = { _ in labelsSeen += 1 }
             peripheral.start()
             await location.requestAuthorization()
+        }
+        .sheet(isPresented: $showingDeviceSettings) {
+            SettingsView(peripheral: peripheral)
         }
     }
 
@@ -93,6 +98,13 @@ struct DashboardView: View {
                 .background(Theme.bg3, in: .rect(cornerRadius: Theme.R.md, style: .continuous))
                 .foregroundStyle(Theme.faint)
                 .disabled(true)
+
+                Button {
+                    showingDeviceSettings = true
+                } label: {
+                    Text("Device settings")
+                }
+                .buttonStyle(PrimaryActionStyle(enabled: true))
             }
         }
     }
