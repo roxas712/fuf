@@ -55,8 +55,20 @@ public actor Uploader {
             return .quarantined(seqs: [bad.seq], reason: reason)
         }
 
+        // The phone has known both of these since the session began; sending
+        // nil is why every session row on the server has a null start and end.
+        //
+        // `started_at` goes on every batch because the server only applies it
+        // when it first INSERTs the session row -- whichever batch happens to
+        // arrive first is the only chance at it, so all of them carry it.
+        //
+        // `ended_at` rides along only once the session is closed. The server
+        // writes whatever end time it is sent, on every request, so sending one
+        // for a session that is still recording would mark it finished mid-run.
+        let times = try store.sessionTimes(id: first.sessionID)
+
         let payload = UploadPayload(sessionID: first.sessionID, deviceID: deviceID,
-                                    startedAt: nil, endedAt: nil,
+                                    startedAt: times?.startedAt, endedAt: times?.endedAt,
                                     sightings: Array(batch))
         let body = try JSONEncoder().encode(payload)
         let reply = try await http.post(url: endpoint, body: body, bearer: token())

@@ -307,6 +307,35 @@ public final class SightingStore: @unchecked Sendable {
         }
     }
 
+    /// When a session began, and when it ended if it has.
+    ///
+    /// One value rather than two lookups: the uploader needs both on every
+    /// batch, and reading them separately could straddle a `stop()` and pair a
+    /// start from one view of the row with an end from another.
+    public struct SessionTimes: Equatable, Sendable {
+        public let startedAt: Double
+        /// `nil` while the session is still recording, and load-bearing: the
+        /// server applies an `ended_at` whenever one is sent, so a running
+        /// session must have none to send.
+        public let endedAt: Double?
+    }
+
+    /// The times for one session, or nil when no row was ever written for it --
+    /// which is true of anything queued before sessions were persisted.
+    public func sessionTimes(id: String) throws -> SessionTimes? {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db,
+            "SELECT started_at, ended_at FROM sessions WHERE id = ?1;",
+            -1, &st, nil) == SQLITE_OK else {
+            throw StoreError.sql(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_text(st, 1, id, -1, Self.transient)
+        guard sqlite3_step(st) == SQLITE_ROW else { return nil }
+        return SessionTimes(startedAt: sqlite3_column_double(st, 0),
+                            endedAt: optionalDouble(st, 1))
+    }
+
     /// The session left running, if any. Most recent first, because only one
     /// should ever be open and the newest is the one that matters.
     public func openSessionID() throws -> String? {

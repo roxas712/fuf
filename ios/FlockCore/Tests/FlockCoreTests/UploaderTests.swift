@@ -258,3 +258,87 @@ struct UploaderTests {
         #expect(d == 2)                                  // back to the first step
     }
 }
+
+// Session times. Asserted on the encoded body rather than the payload struct:
+// the failure being guarded here is a wire-name mistake, and a struct with the
+// right values and the wrong CodingKeys would satisfy every other kind of test
+// while the server kept storing nulls.
+extension UploaderTests {
+
+    @Test("every batch carries the session's start time")
+    func startedAtRidesOnEveryBatch() async throws {
+        // The server applies started_at only when it first INSERTs the session
+        // row, and the phone cannot know which batch will be the one to do
+        // that -- a retry, a relaunch or a 401 all reshuffle which arrives
+        // first. So every batch carries it.
+        let store = try makeStore()
+        try store.openSession(id: "sess-1", startedAt: 1_756_999_000)
+        for seq in 1...2 { try store.insert(sighting(seq: seq)) }
+        let http = FakeHTTP()
+        http.responses = [.success(ok(accepted: 2)), .success(ok(accepted: 1))]
+        let up = Uploader(store: store, http: http,
+                          endpoint: URL(string: "https://x/y")!, token: { "t" })
+
+        _ = try await up.uploadOnce()
+        try store.insert(sighting(seq: 3))
+        _ = try await up.uploadOnce()
+
+        #expect(http.decodedBody(0)["started_at"] as? Double == 1_756_999_000)
+        #expect(http.decodedBody(1)["started_at"] as? Double == 1_756_999_000)
+    }
+
+    @Test("a running session sends no end time")
+    func openSessionSendsNoEndTime() async throws {
+        // The server writes `ended_at` whenever the key is present, so an end
+        // time sent from a session that is still recording would mark it
+        // finished while the phone is still filling it.
+        let store = try makeStore()
+        try store.openSession(id: "sess-1", startedAt: 1_756_999_000)
+        try store.insert(sighting(seq: 1))
+        let http = FakeHTTP()
+        http.responses = [.success(ok(accepted: 1))]
+        let up = Uploader(store: store, http: http,
+                          endpoint: URL(string: "https://x/y")!, token: { "t" })
+
+        _ = try await up.uploadOnce()
+        let body = http.decodedBody(0)
+        #expect(body["started_at"] as? Double == 1_756_999_000)
+        #expect(body["ended_at"] == nil)     // omitted outright, not sent as null
+    }
+
+    @Test("a closed session sends its end time")
+    func closedSessionSendsEndTime() async throws {
+        // Stopping is asynchronous from uploading: `stop()` closes the row and
+        // then drains, so the last batches of a session go out after it ends
+        // and are what carry the end time.
+        let store = try makeStore()
+        try store.openSession(id: "sess-1", startedAt: 1_756_999_000)
+        try store.insert(sighting(seq: 1))
+        try store.closeSession(id: "sess-1", endedAt: 1_757_000_000)
+        let http = FakeHTTP()
+        http.responses = [.success(ok(accepted: 1))]
+        let up = Uploader(store: store, http: http,
+                          endpoint: URL(string: "https://x/y")!, token: { "t" })
+
+        _ = try await up.uploadOnce()
+        let body = http.decodedBody(0)
+        #expect(body["started_at"] as? Double == 1_756_999_000)
+        #expect(body["ended_at"] as? Double == 1_757_000_000)
+    }
+
+    @Test("a batch from an unknown session still uploads")
+    func missingSessionRowStillUploads() async throws {
+        // Sightings queued before sessions were persisted have no row to read
+        // times from. They are still real detections: they upload with no
+        // times rather than being held back or dropped.
+        let store = try makeStore()
+        try store.insert(sighting(seq: 1))
+        let http = FakeHTTP()
+        http.responses = [.success(ok(accepted: 1))]
+        let up = Uploader(store: store, http: http,
+                          endpoint: URL(string: "https://x/y")!, token: { "t" })
+
+        #expect(try await up.uploadOnce() == .uploaded(1))
+        #expect(http.decodedBody(0)["started_at"] == nil)
+    }
+}
