@@ -7,4 +7,11 @@
 APP_BUNDLE_ID = com.example.flocksquawk
 DEVELOPMENT_TEAM =
 
+// The server the app uploads to. Placeholder on purpose.
+// xcconfig treats // as the start of a comment, so a URL written literally is
+// silently truncated at the scheme -- "https://host" becomes "https:" with no
+// warning at build or run time. $(SLASH) is the standard way around it.
+SLASH = /
+BACKEND_BASE_URL = https:$(SLASH)$(SLASH)example.com
+
 #include? "Signing.local.xcconfig"

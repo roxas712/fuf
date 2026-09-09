@@ -37,6 +37,9 @@ targets:
       path: Info.plist
       properties:
         UILaunchScreen: {}
+        # Filled from BACKEND_BASE_URL in Signing.local.xcconfig (gitignored),
+        # so a public repo never names a real deployment.
+        BackendBaseURL: $(BACKEND_BASE_URL)
         UIRequiredDeviceCapabilities: [armv7, bluetooth-le]
         # Both modes are required, and location is the load-bearing one: it is
         # what keeps the process alive. Relying on BLE-only background wakeups,

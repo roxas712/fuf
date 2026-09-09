@@ -6,3 +6,11 @@
 //                     app in your team.
 DEVELOPMENT_TEAM = ABCDE12345
 APP_BUNDLE_ID = com.yourname.flocksquawk
+
+// Your backend. The app posts sightings to <this>/api/flock/sightings
+// and logs in at <this>/api/login.
+// xcconfig treats // as the start of a comment, so a URL written literally is
+// silently truncated at the scheme -- "https://host" becomes "https:" with no
+// warning at build or run time. $(SLASH) is the standard way around it.
+SLASH = /
+BACKEND_BASE_URL = https:$(SLASH)$(SLASH)your-server.example
